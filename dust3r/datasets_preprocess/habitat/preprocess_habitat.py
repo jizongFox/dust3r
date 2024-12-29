@@ -74,7 +74,7 @@ def preprocess_metadata(metadata_filename,
                                                                                  navmesh=navmesh,
                                                                                  scene_dataset_config_file=scene_dataset_config_file,
                                                                                  equirectangular_resolution=equirectangular_resolution,
-                                                                                 crop_resolution=crop_resolution,)
+                                                                                 crop_resolution=crop_resolution, )
                 os.makedirs(output_dir, exist_ok=bool(fix_existing_dataset))
 
             # Generate a higher resolution crop

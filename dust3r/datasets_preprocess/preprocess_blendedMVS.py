@@ -19,7 +19,7 @@ import numpy as np
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 import cv2
 
-import path_to_root  # noqa
+# import path_to_root  # noqa
 from dust3r.utils.parallel import parallel_threads
 from dust3r.datasets.utils import cropping  # noqa
 

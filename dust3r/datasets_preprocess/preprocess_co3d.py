@@ -23,7 +23,7 @@ import cv2
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 
-import path_to_root  # noqa
+# import path_to_root  # noqa
 import dust3r.datasets.utils.cropping as cropping  # noqa
 
 
