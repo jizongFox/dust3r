@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 
 from dust3r.cloud_opt.base_opt import BasePCOptimizer
-from dust3r.utils.geometry import xy_grid, geotrf
 from dust3r.utils.device import to_cpu, to_numpy
+from dust3r.utils.geometry import xy_grid, geotrf
 
 
 class PointCloudOptimizer(BasePCOptimizer):
@@ -26,15 +26,15 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.focal_break = focal_break
 
         # adding thing to optimize
-        self.im_depthmaps = nn.ParameterList(torch.randn(H, W)/10-3 for H, W in self.imshapes)  # log(depth)
+        self.im_depthmaps = nn.ParameterList(torch.randn(H, W) / 10 - 3 for H, W in self.imshapes)  # log(depth)
         self.im_poses = nn.ParameterList(self.rand_pose(self.POSE_DIM) for _ in range(self.n_imgs))  # camera poses
         self.im_focals = nn.ParameterList(torch.FloatTensor(
-            [self.focal_break*np.log(max(H, W))]) for H, W in self.imshapes)  # camera intrinsics
+            [self.focal_break * np.log(max(H, W))]) for H, W in self.imshapes)  # camera intrinsics
         self.im_pp = nn.ParameterList(torch.zeros((2,)) for _ in range(self.n_imgs))  # camera intrinsics
         self.im_pp.requires_grad_(optimize_pp)
 
         self.imshape = self.imshapes[0]
-        im_areas = [h*w for h, w in self.imshapes]
+        im_areas = [h * w for h, w in self.imshapes]
         self.max_area = max(im_areas)
 
         # adding thing to optimize
@@ -42,7 +42,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         self.im_poses = ParameterStack(self.im_poses, is_param=True)
         self.im_focals = ParameterStack(self.im_focals, is_param=True)
         self.im_pp = ParameterStack(self.im_pp, is_param=True)
-        self.register_buffer('_pp', torch.tensor([(w/2, h/2) for h, w in self.imshapes]))
+        self.register_buffer('_pp', torch.tensor([(w / 2, h / 2) for h, w in self.imshapes]))
         self.register_buffer('_grid', ParameterStack(
             [xy_grid(W, H, device=self.device) for H, W in self.imshapes], fill=self.max_area))
 
@@ -70,7 +70,7 @@ class PointCloudOptimizer(BasePCOptimizer):
             known_poses = [known_poses]
         for idx, pose in zip(self._get_msk_indices(pose_msk), known_poses):
             if self.verbose:
-                print(f' (setting pose #{idx} = {pose[:3,3]})')
+                print(f' (setting pose #{idx} = {pose[:3, 3]})')
             self._no_grad(self._set_pose(self.im_poses, idx, torch.tensor(pose)))
 
         # normalize scale if there's less than 1 known pose
@@ -135,7 +135,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         param = self.im_pp[idx]
         H, W = self.imshapes[idx]
         if param.requires_grad or force:  # can only init a parameter not already initialized
-            param.data[:] = to_cpu(to_numpy(pp) - (W/2, H/2)) / 10
+            param.data[:] = to_cpu(to_numpy(pp) - (W / 2, H / 2)) / 10
         return param
 
     def get_principal_points(self):
@@ -164,15 +164,25 @@ class PointCloudOptimizer(BasePCOptimizer):
     def get_depthmaps(self, raw=False):
         res = self.im_depthmaps.exp()
         if not raw:
-            res = [dm[:h*w].view(h, w) for dm, (h, w) in zip(res, self.imshapes)]
+            res = [dm[:h * w].view(h, w) for dm, (h, w) in zip(res, self.imshapes)]
         return res
 
     def depth_to_pts3d(self):
         # Get depths and  projection params if not provided
         focals = self.get_focals()
         pp = self.get_principal_points()
-        im_poses = self.get_im_poses()
+        im_poses = self.get_im_poses()  # cam2world
         depth = self.get_depthmaps(raw=True)
+        # depth: [3, 147456]
+        # visualize depth:
+        # import plotly.graph_objects as go
+        # # fig = go.Figure(
+        # #     data=[go.Heatmap(z=dm) for dm in depth.detach().cpu()])
+        # fig = go.Figure(
+        #     data=[go.Scatter3d(x=dm[:, 0], y=dm[:, 1], z=dm[:, 2], mode='markers') for dm in depth.detach().cpu()]
+        # )
+        # fig.show()
+        # exit()
 
         # get pointmaps in camera frame
         rel_ptmaps = _fast_depthmap_to_pts3d(depth, self._grid, focals, pp=pp)
@@ -182,7 +192,7 @@ class PointCloudOptimizer(BasePCOptimizer):
     def get_pts3d(self, raw=False):
         res = self.depth_to_pts3d()
         if not raw:
-            res = [dm[:h*w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
+            res = [dm[:h * w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
         return res
 
     def forward(self):
@@ -193,6 +203,7 @@ class PointCloudOptimizer(BasePCOptimizer):
         # rotate pairwise prediction according to pw_poses
         aligned_pred_i = geotrf(pw_poses, pw_adapt * self._stacked_pred_i)
         aligned_pred_j = geotrf(pw_poses, pw_adapt * self._stacked_pred_j)
+
 
         # compute the less
         li = self.dist(proj_pts3d[self._ei], aligned_pred_i, weight=self._weight_i).sum() / self.total_area_i
@@ -233,13 +244,13 @@ def _ravel_hw(tensor, fill=0):
     tensor = tensor.view((tensor.shape[0] * tensor.shape[1],) + tensor.shape[2:])
 
     if len(tensor) < fill:
-        tensor = torch.cat((tensor, tensor.new_zeros((fill - len(tensor),)+tensor.shape[1:])))
+        tensor = torch.cat((tensor, tensor.new_zeros((fill - len(tensor),) + tensor.shape[1:])))
     return tensor
 
 
 def acceptable_focal_range(H, W, minf=0.5, maxf=3.5):
     focal_base = max(H, W) / (2 * np.tan(np.deg2rad(60) / 2))  # size / 1.1547005383792515
-    return minf*focal_base, maxf*focal_base
+    return minf * focal_base, maxf * focal_base
 
 
 def apply_mask(img, msk):

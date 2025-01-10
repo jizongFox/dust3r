@@ -6,9 +6,41 @@
 # --------------------------------------------------------
 import tqdm
 import torch
+
 from dust3r.utils.device import to_cpu, collate_with_cat
 from dust3r.utils.misc import invalid_to_nans
 from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
+import typing as t
+from typing import TypedDict
+
+
+class TypedView(TypedDict):
+    img: torch.Tensor
+    true_shape: torch.Tensor
+    instance: t.List[str]
+    idx: t.List[int]
+
+
+class TypedPred1(TypedDict):
+    pts3d: torch.Tensor
+    conf: torch.Tensor
+    desc: torch.Tensor
+    desc_conf: torch.Tensor
+
+
+class TypedPred2(TypedDict):
+    pts3d_in_other_view: torch.Tensor
+    conf: torch.Tensor
+    desc: torch.Tensor
+    desc_conf: torch
+
+
+class TypedLossOutput(TypedDict):
+    view1: TypedView
+    view2: TypedView
+    pred1: TypedPred1
+    pred2: TypedPred2
+    loss: torch.Tensor | None
 
 
 def _interleave_imgs(img1, img2):
@@ -31,7 +63,7 @@ def make_batch_symmetric(batch):
 
 def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, use_amp=False, ret=None):
     view1, view2 = batch
-    ignore_keys = set(['depthmap', 'dataset', 'label', 'instance', 'idx', 'true_shape', 'rng'])
+    ignore_keys = {'depthmap', 'dataset', 'label', 'instance', 'idx', 'true_shape', 'rng'}
     for view in batch:
         for name in view.keys():  # pseudo_focal
             if name in ignore_keys:
@@ -49,6 +81,7 @@ def loss_of_one_batch(batch, model, criterion, device, symmetrize_batch=False, u
             loss = criterion(view1, view2, pred1, pred2) if criterion is not None else None
 
     result = dict(view1=view1, view2=view2, pred1=pred1, pred2=pred2, loss=loss)
+    result = t.cast(TypedLossOutput, result)
     return result[ret] if ret else result
 
 
@@ -65,6 +98,7 @@ def inference(pairs, model, device, batch_size=8, verbose=True):
 
     for i in tqdm.trange(0, len(pairs), batch_size, disable=not verbose):
         res = loss_of_one_batch(collate_with_cat(pairs[i:i + batch_size]), model, None, device)
+        res: TypedLossOutput
         result.append(to_cpu(res))
 
     result = collate_with_cat(result, lists=multiple_shapes)
