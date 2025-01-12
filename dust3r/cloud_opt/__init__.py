@@ -6,10 +6,10 @@
 # --------------------------------------------------------
 from enum import Enum
 
-from .optimizer import PointCloudOptimizer
 from .modular_optimizer import ModularPointCloudOptimizer
+from .optimizer import PointCloudOptimizer
 from .pair_viewer import PairViewer
-from ..inference import TypedLossOutput
+from ..abstraction import TypedLossOutput
 
 
 class GlobalAlignerMode(Enum):
@@ -18,13 +18,13 @@ class GlobalAlignerMode(Enum):
     PairViewer = "PairViewer"
 
 
-def global_aligner(dust3r_output:TypedLossOutput, device, mode=GlobalAlignerMode.PointCloudOptimizer, **optim_kw):
+def global_aligner(dust3r_output: TypedLossOutput, device, mode=GlobalAlignerMode.PointCloudOptimizer, **optim_kw):
     # extract all inputs
     # view1, view2, pred1, pred2 = [dust3r_output[k] for k in 'view1 view2 pred1 pred2'.split()]
-    view1 = dust3r_output['view1']
-    view2 = dust3r_output['view2']
-    pred1 = dust3r_output['pred1']
-    pred2 = dust3r_output['pred2']
+    view1 = dust3r_output["view1"]
+    view2 = dust3r_output["view2"]
+    pred1 = dust3r_output["pred1"]
+    pred2 = dust3r_output["pred2"]
     # build the optimizer
     if mode == GlobalAlignerMode.PointCloudOptimizer:
         net = PointCloudOptimizer(view1, view2, pred1, pred2, **optim_kw).to(device)
@@ -33,6 +33,6 @@ def global_aligner(dust3r_output:TypedLossOutput, device, mode=GlobalAlignerMode
     elif mode == GlobalAlignerMode.PairViewer:
         net = PairViewer(view1, view2, pred1, pred2, **optim_kw).to(device)
     else:
-        raise NotImplementedError(f'Unknown mode {mode}')
+        raise NotImplementedError(f"Unknown mode {mode}")
 
     return net
