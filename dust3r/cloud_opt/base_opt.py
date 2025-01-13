@@ -4,7 +4,7 @@
 # --------------------------------------------------------
 # Base class for the global alignement procedure
 # --------------------------------------------------------
-from copy import deepcopy
+import typing as t
 from copy import deepcopy
 
 import numpy as np
@@ -12,11 +12,23 @@ import roma
 import torch
 import torch.nn as nn
 import tqdm
+from jaxtyping import Float
+from torch import Tensor
 
 import dust3r
 import dust3r.cloud_opt.init_im_poses as init_fun
-from dust3r.cloud_opt.commons import (edge_str, ALL_DISTS, NoGradParamDict, get_imshapes, signed_expm1, signed_log1p,
-                                      cosine_schedule, linear_schedule, get_conf_trf)
+from dust3r.abstraction import TypedView, TypedPred1, TypedPred2
+from dust3r.cloud_opt.commons import (
+    edge_str,
+    ALL_DISTS,
+    NoGradParamDict,
+    get_imshapes,
+    signed_expm1,
+    signed_log1p,
+    cosine_schedule,
+    linear_schedule,
+    get_conf_trf,
+)
 from dust3r.optim_factory import adjust_learning_rate_by_lr
 from dust3r.utils.device import to_numpy
 from dust3r.utils.geometry import inv, geotrf
@@ -25,7 +37,7 @@ from dust3r.viz import SceneViz, segment_sky, auto_cam_size
 
 
 class BasePCOptimizer(nn.Module):
-    """ Optimize a global scene, given a list of pairwise observations.
+    """Optimize a global scene, given a list of pairwise observations.
     Graph node: images
     Graph edges: observations = (pred1, pred2)
     """
@@ -33,52 +45,69 @@ class BasePCOptimizer(nn.Module):
     def __init__(self, *args, **kwargs):
         if len(args) == 1 and len(kwargs) == 0:
             other = deepcopy(args[0])
-            attrs = '''edges is_symmetrized dist n_imgs pred_i pred_j imshapes 
+            attrs = """edges is_symmetrized dist n_imgs pred_i pred_j imshapes 
                         min_conf_thr conf_thr conf_i conf_j im_conf
                         base_scale norm_pw_scale POSE_DIM pw_poses 
-                        pw_adaptors pw_adaptors has_im_poses rand_pose imgs verbose'''.split()
+                        pw_adaptors pw_adaptors has_im_poses rand_pose imgs verbose""".split()
             self.__dict__.update({k: other[k] for k in attrs})
         else:
             self._init_from_views(*args, **kwargs)
 
-    def _init_from_views(self, view1, view2, pred1, pred2,
-                         dist='l1',
-                         conf='log',
-                         min_conf_thr=3,
-                         base_scale=0.5,
-                         allow_pw_adaptors=False,
-                         pw_break=20,
-                         rand_pose=torch.randn,
-                         iterationsCount=None,
-                         verbose=True):
+    def _init_from_views(
+        self,
+        view1: TypedView,
+        view2: TypedView,
+        pred1: TypedPred1,
+        pred2: TypedPred2,
+        dist="l1",
+        conf="log",
+        min_conf_thr=3,
+        base_scale=0.5,
+        allow_pw_adaptors=False,
+        pw_break=20,
+        rand_pose=torch.randn,
+        iterationsCount=None,
+        verbose=True,
+    ):
         super().__init__()
-        if not isinstance(view1['idx'], list):
-            view1['idx'] = view1['idx'].tolist()
-        if not isinstance(view2['idx'], list):
-            view2['idx'] = view2['idx'].tolist()
-        self.edges = [(int(i), int(j)) for i, j in zip(view1['idx'], view2['idx'])]
+        if not isinstance(view1["idx"], list):
+            view1["idx"] = view1["idx"].tolist()
+        if not isinstance(view2["idx"], list):
+            view2["idx"] = view2["idx"].tolist()
+        self.edges = [(int(i), int(j)) for i, j in zip(view1["idx"], view2["idx"])]
         self.is_symmetrized = set(self.edges) == {(j, i) for i, j in self.edges}
         self.dist = ALL_DISTS[dist]
         self.verbose = verbose
 
-        self.n_imgs = self._check_edges()
+        self.n_imgs = self._check_edges()  # n imaages, n*(n-1) pairs
 
         # input data
-        pred1_pts = pred1['pts3d']
-        pred2_pts = pred2['pts3d_in_other_view']
+        pred1_pts: Float[torch.Tensor, "b H W 3"]
+        pred2_pts: Float[torch.Tensor, "b H W 3"]
+        self.pred_i: t.Dict[str, Float[torch.Tensor, "H W 3"]]
+        self.pred_j: t.Dict[str, Float[torch.Tensor, "H W 3"]]
+        pred1_pts = pred1["pts3d"]
+        pred2_pts = pred2["pts3d_in_other_view"]
         self.pred_i = NoGradParamDict({ij: pred1_pts[n] for n, ij in enumerate(self.str_edges)})
         self.pred_j = NoGradParamDict({ij: pred2_pts[n] for n, ij in enumerate(self.str_edges)})
         self.imshapes = get_imshapes(self.edges, pred1_pts, pred2_pts)
 
         # work in log-scale with conf
-        pred1_conf = pred1['conf']
-        pred2_conf = pred2['conf']
+        pred1_conf = pred1["conf"]
+        pred2_conf = pred2["conf"]
+        pred1_conf: Float[torch.Tensor, "b H W"]
+        pred2_conf: Float[torch.Tensor, "b H W"]
         self.min_conf_thr = min_conf_thr
         self.conf_trf = get_conf_trf(conf)
 
         self.conf_i = NoGradParamDict({ij: pred1_conf[n] for n, ij in enumerate(self.str_edges)})
         self.conf_j = NoGradParamDict({ij: pred2_conf[n] for n, ij in enumerate(self.str_edges)})
-        self.im_conf = self._compute_img_conf(pred1_conf, pred2_conf)
+        self.conf_i: t.Dict[str, Float[torch.Tensor, "H W"]]
+        self.conf_j: t.Dict[str, Float[torch.Tensor, "H W"]]
+
+        self.im_conf = self._compute_img_conf(pred1_conf, pred2_conf)  # merge the conf map from pairwise predictions.
+        self.im_conf: t.List[Float[torch.Tensor, "H W"]]
+
         for i in range(len(self.im_conf)):
             self.im_conf[i].requires_grad = False
 
@@ -95,13 +124,13 @@ class BasePCOptimizer(nn.Module):
 
         # possibly store images for show_pointcloud
         self.imgs = None
-        if 'img' in view1 and 'img' in view2:
+        if "img" in view1 and "img" in view2:
             imgs = [torch.zeros((3,) + hw) for hw in self.imshapes]
             for v in range(len(self.edges)):
-                idx = view1['idx'][v]
-                imgs[idx] = view1['img'][v]
-                idx = view2['idx'][v]
-                imgs[idx] = view2['img'][v]
+                idx = view1["idx"][v]
+                imgs[idx] = view1["img"][v]
+                idx = view2["idx"][v]
+                imgs[idx] = view2["img"][v]
             self.imgs = rgb(imgs)
 
     @property
@@ -122,19 +151,22 @@ class BasePCOptimizer(nn.Module):
 
     def state_dict(self, trainable=True):
         all_params = super().state_dict()
-        return {k: v for k, v in all_params.items() if
-                k.startswith(('_', 'pred_i.', 'pred_j.', 'conf_i.', 'conf_j.')) != trainable}
+        return {
+            k: v
+            for k, v in all_params.items()
+            if k.startswith(("_", "pred_i.", "pred_j.", "conf_i.", "conf_j.")) != trainable
+        }
 
     def load_state_dict(self, data):
         return super().load_state_dict(self.state_dict(trainable=False) | data)
 
     def _check_edges(self):
         indices = sorted({i for edge in self.edges for i in edge})
-        assert indices == list(range(len(indices))), 'bad pair indices: missing values '
+        assert indices == list(range(len(indices))), "bad pair indices: missing values "
         return len(indices)
 
     @torch.no_grad()
-    def _compute_img_conf(self, pred1_conf, pred2_conf):
+    def _compute_img_conf(self, pred1_conf: Float[Tensor, "b H W"], pred2_conf: Float[Tensor, "b H W"]):
         im_conf = nn.ParameterList([torch.zeros(hw, device=self.device) for hw in self.imshapes])
         for e, (i, j) in enumerate(self.edges):
             im_conf[i] = torch.maximum(im_conf[i], pred1_conf[e])
@@ -204,7 +236,7 @@ class BasePCOptimizer(nn.Module):
     def get_pts3d(self, raw=False):
         res = self.depth_to_pts3d()
         if not raw:
-            res = [dm[:h * w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
+            res = [dm[: h * w].view(h, w, 3) for dm, (h, w) in zip(res, self.imshapes)]
         return res
 
     def _set_focal(self, idx, focal, force=False):
@@ -277,13 +309,12 @@ class BasePCOptimizer(nn.Module):
     def compute_global_alignment(self, init=None, niter_PnP=10, **kw):
         if init is None:
             pass
-        elif init == 'msp' or init == 'mst':
+        elif init == "msp" or init == "mst":
             init_fun.init_minimum_spanning_tree(self, niter_PnP=niter_PnP)
-        elif init == 'known_poses':
-            init_fun.init_from_known_poses(self, min_conf_thr=self.min_conf_thr,
-                                           niter_PnP=niter_PnP)
+        elif init == "known_poses":
+            init_fun.init_from_known_poses(self, min_conf_thr=self.min_conf_thr, niter_PnP=niter_PnP)
         else:
-            raise ValueError(f'bad value for {init=}')
+            raise ValueError(f"bad value for {init=}")
 
         return global_alignment_loop(self, **kw)
 
@@ -310,8 +341,9 @@ class BasePCOptimizer(nn.Module):
         im_poses = to_numpy(self.get_im_poses())
         if cam_size is None:
             cam_size = auto_cam_size(im_poses)
-        viz.add_cameras(im_poses, self.get_focals(), colors=colors,
-                        images=self.imgs, imsizes=self.imsizes, cam_size=cam_size)
+        viz.add_cameras(
+            im_poses, self.get_focals(), colors=colors, images=self.imgs, imsizes=self.imsizes, cam_size=cam_size
+        )
         if show_pw_cams:
             pw_poses = self.get_pw_poses()
             viz.add_cameras(pw_poses, color=(192, 0, 192), cam_size=cam_size)
@@ -324,7 +356,7 @@ class BasePCOptimizer(nn.Module):
         return viz
 
 
-def global_alignment_loop(net, lr=0.01, niter=300, schedule='cosine', lr_min=1e-6):
+def global_alignment_loop(net, lr=0.01, niter=300, schedule="cosine", lr_min=1e-6):
     net: dust3r.cloud_opt.optimizer.PointCloudOptimizer
     params = [p for p in net.parameters() if p.requires_grad]
     if not params:
@@ -332,33 +364,68 @@ def global_alignment_loop(net, lr=0.01, niter=300, schedule='cosine', lr_min=1e-
 
     verbose = net.verbose
     if verbose:
-        print('Global alignement - optimizing for:')
+        print("Global alignement - optimizing for:")
         print([name for name, value in net.named_parameters() if value.requires_grad])
 
     lr_base = lr
     optimizer = torch.optim.Adam(params, lr=lr, betas=(0.9, 0.9))
 
-    loss = float('inf')
+    loss = float("inf")
+    # torch.Size([4, 147456, 3])
+    #
+    import plotly.graph_objects as go
+
+    # Plot proj_pts3d using plotly
+    proj_pts3d = net.get_pts3d(raw=True)
+    fig = go.Figure()
+
+    # Add initial proj_pts3d to the figure
+    fig.add_trace(
+        go.Scatter3d(
+            x=proj_pts3d[:, :, 0].flatten().detach().cpu().numpy()[::10],
+            y=proj_pts3d[:, :, 1].flatten().detach().cpu().numpy()[::10],
+            z=proj_pts3d[:, :, 2].flatten().detach().cpu().numpy()[::10],
+            mode="markers",
+            marker=dict(color="blue"),
+            name="Initial",
+        )
+    )
+
     if verbose:
         with tqdm.tqdm(total=niter) as bar:
             while bar.n < bar.total:
                 loss, lr = global_alignment_iter(net, bar.n, niter, lr_base, lr_min, optimizer, schedule)
-                bar.set_postfix_str(f'{lr=:g} loss={loss:g}')
+                bar.set_postfix_str(f"{lr=:g} loss={loss:g}")
                 bar.update()
     else:
         for n in range(niter):
             loss, _ = global_alignment_iter(net, n, niter, lr_base, lr_min, optimizer, schedule)
+
+    # Add final proj_pts3d to the figure
+    proj_pts3d = net.get_pts3d(raw=True)
+    fig.add_trace(
+        go.Scatter3d(
+            x=proj_pts3d[:, :, 0].flatten().detach().cpu().numpy()[::10],
+            y=proj_pts3d[:, :, 1].flatten().detach().cpu().numpy()[::10],
+            z=proj_pts3d[:, :, 2].flatten().detach().cpu().numpy()[::10],
+            mode="markers",
+            marker=dict(color="red"),
+            name="Final",
+        )
+    )
+
+    fig.show()
     return loss
 
 
 def global_alignment_iter(net, cur_iter, niter, lr_base, lr_min, optimizer, schedule):
     t = cur_iter / niter
-    if schedule == 'cosine':
+    if schedule == "cosine":
         lr = cosine_schedule(t, lr_base, lr_min)
-    elif schedule == 'linear':
+    elif schedule == "linear":
         lr = linear_schedule(t, lr_base, lr_min)
     else:
-        raise ValueError(f'bad lr {schedule=}')
+        raise ValueError(f"bad lr {schedule=}")
     adjust_learning_rate_by_lr(optimizer, lr)
     optimizer.zero_grad()
     loss = net()
@@ -369,9 +436,8 @@ def global_alignment_iter(net, cur_iter, niter, lr_base, lr_min, optimizer, sche
 
 
 @torch.no_grad()
-def clean_pointcloud(im_confs, K, cams, depthmaps, all_pts3d,
-                     tol=0.001, bad_conf=0, dbg=()):
-    """ Method: 
+def clean_pointcloud(im_confs, K, cams, depthmaps, all_pts3d, tol=0.001, bad_conf=0, dbg=()):
+    """Method:
     1) express all 3d points in each camera coordinate frame
     2) if they're in front of a depthmap --> then lower their confidence
     """
@@ -385,7 +451,8 @@ def clean_pointcloud(im_confs, K, cams, depthmaps, all_pts3d,
 
     for i, pts3d in enumerate(all_pts3d):
         for j in range(len(all_pts3d)):
-            if i == j: continue
+            if i == j:
+                continue
 
             # project 3dpts in other view
             proj = geotrf(cams[j], pts3d)
