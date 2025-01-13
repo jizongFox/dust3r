@@ -52,7 +52,8 @@ def visualize_typed_loss_output_plotly_with_uncertainty(
     typed_loss_output: TypedLossOutput, save_path: Path | None = None
 ):
     """
-    Visualizes TypedLossOutput including images from view1 and view2, their uncertainties, and predicted 3D point clouds using Plotly.
+    Visualizes TypedLossOutput including images from view1 and view2, their uncertainties (as images),
+    and predicted 3D point clouds using Plotly.
 
     Args:
         typed_loss_output (TypedLossOutput): The loss output to visualize.
@@ -60,7 +61,7 @@ def visualize_typed_loss_output_plotly_with_uncertainty(
     """
     n_pairs = len(typed_loss_output["view1"]["img"]) // 2
 
-    # Create image, uncertainty, and 3D scatter plot subplots
+    # Create image, uncertainty (as images), and 3D scatter plot subplots
     fig = sp.make_subplots(
         rows=n_pairs,
         cols=5,  # Adding columns for uncertainties
@@ -82,10 +83,9 @@ def visualize_typed_loss_output_plotly_with_uncertainty(
             for j in range(5)
         ],
         specs=[
-            [{"type": "image"}, {"type": "image"}, {"type": "heatmap"}, {"type": "heatmap"}, {"type": "scatter3d"}]
+            [{"type": "image"}, {"type": "image"}, {"type": "image"}, {"type": "image"}, {"type": "scatter3d"}]
             for _ in range(n_pairs)
         ],
-        vertical_spacing=0.05,  # Reduce vertical spacing
     )
 
     for i in range(n_pairs):
@@ -103,27 +103,17 @@ def visualize_typed_loss_output_plotly_with_uncertainty(
         view1_uncertainty = typed_loss_output["pred1"]["conf"][i].cpu().numpy()
         view2_uncertainty = typed_loss_output["pred2"]["conf"][i].cpu().numpy()
 
-        # Add uncertainty heatmaps
-        fig.add_trace(
-            go.Heatmap(
-                z=view1_uncertainty,
-                colorscale="Viridis",
-                showscale=False,
-                colorbar=dict(title="View1 Uncertainty", len=0.3, y=1 - i * 0.2),
-            ),
-            row=i + 1,
-            col=3,
-        )
-        fig.add_trace(
-            go.Heatmap(
-                z=view2_uncertainty,
-                colorscale="Viridis",
-                showscale=False,
-                colorbar=dict(title="View2 Uncertainty", len=0.3, y=1 - i * 0.2),
-            ),
-            row=i + 1,
-            col=4,
-        )
+        # Normalize uncertainty to [0, 255] for image visualization
+        view1_uncertainty_img = (
+            (view1_uncertainty - view1_uncertainty.min()) / (view1_uncertainty.max() - view1_uncertainty.min()) * 255
+        ).astype("uint8")
+        view2_uncertainty_img = (
+            (view2_uncertainty - view2_uncertainty.min()) / (view2_uncertainty.max() - view2_uncertainty.min()) * 255
+        ).astype("uint8")
+
+        # Add uncertainty images
+        fig.add_trace(go.Image(z=np.stack([view1_uncertainty_img] * 3, axis=-1)), row=i + 1, col=3)
+        fig.add_trace(go.Image(z=np.stack([view2_uncertainty_img] * 3, axis=-1)), row=i + 1, col=4)
 
         # Extract and subsample predicted 3D points for compactness
         pred1_pts3d = typed_loss_output["pred1"]["pts3d"][i].reshape(-1, 3).cpu().numpy()[::5]
@@ -165,6 +155,7 @@ def visualize_typed_loss_output_plotly_with_uncertainty(
         margin=dict(l=10, r=10, t=30, b=10),  # Smaller margins
         showlegend=False,  # Disable the legend globally
     )
+
     # Apply viewing direction for all 3D scatter plots
     for i in range(n_pairs):
         scene_id = f"scene{i + 1}"  # Generate scene IDs dynamically
@@ -173,14 +164,9 @@ def visualize_typed_loss_output_plotly_with_uncertainty(
         )
 
     fig.update_scenes(aspectmode="data")  # Ensure 3D scatter respects real-world aspect ratios
-    # Invert Y-axis for heatmaps
-    for i in range(n_pairs):
-        fig.update_yaxes(autorange="reversed", row=i + 1, col=3)  # View1 uncertainty
-        fig.update_yaxes(autorange="reversed", row=i + 1, col=4)  # View2 uncertainty
 
-    # Update axis settings for uniform width
-    for row, col in product(range(1, n_pairs + 1), [1, 2, 3, 4]):  # Apply to image and heatmap columns
-        fig.update_xaxes(scaleanchor="x", row=row, col=col)
+    # Remove tick labels for all axes
+    for row, col in product(range(1, n_pairs + 1), [1, 2, 3, 4]):
         fig.update_xaxes(showticklabels=False, row=row, col=col)
         fig.update_yaxes(showticklabels=False, row=row, col=col)
 
